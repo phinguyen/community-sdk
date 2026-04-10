@@ -40,6 +40,10 @@
 // Power management
 #define CMD_DEEP_SLEEP 0x10 // Deep sleep
 
+namespace {
+inline uint16_t packedRowBytes(const uint16_t width) { return (width + 7U) / 8U; }
+}  // namespace
+
 // Custom LUT for fast refresh (differential 3-pass mode, 12 frames)
 const unsigned char lut_grayscale[] PROGMEM = {
     // 00 black/white
@@ -642,31 +646,35 @@ void EInkDisplay::drawImage(const uint8_t *imageData, const uint16_t x, const ui
     return;
   }
 
-  // Calculate bytes per line for the image
-  const uint16_t imageWidthBytes = w / 8;
-
-  // Copy image data to frame buffer
+  const uint16_t imageWidthBytes = packedRowBytes(w);
   for (uint16_t row = 0; row < h; row++)
   {
     const uint16_t destY = y + row;
     if (destY >= displayHeight)
       break;
 
-    const uint16_t destOffset = destY * displayWidthBytes + (x / 8);
-    const uint16_t srcOffset = row * imageWidthBytes;
-
-    for (uint16_t col = 0; col < imageWidthBytes; col++)
+    const uint32_t destRowOffset = static_cast<uint32_t>(destY) * displayWidthBytes;
+    const uint32_t srcRowOffset = static_cast<uint32_t>(row) * imageWidthBytes;
+    for (uint16_t byteIndex = 0; byteIndex < imageWidthBytes; byteIndex++)
     {
-      if ((x / 8 + col) >= displayWidthBytes)
-        break;
+      const uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcRowOffset + byteIndex]) : imageData[srcRowOffset + byteIndex];
+      const uint16_t srcBaseX = byteIndex * 8U;
+      for (uint16_t bit = 0; bit < 8U && (srcBaseX + bit) < w; bit++)
+      {
+        const uint16_t destX = x + srcBaseX + bit;
+        if (destX >= displayWidth)
+          break;
 
-      if (fromProgmem)
-      {
-        frameBuffer[destOffset + col] = pgm_read_byte(&imageData[srcOffset + col]);
-      }
-      else
-      {
-        frameBuffer[destOffset + col] = imageData[srcOffset + col];
+        const uint32_t destByteIndex = destRowOffset + (destX >> 3U);
+        const uint8_t destMask = static_cast<uint8_t>(0x80U >> (destX & 7U));
+        if (srcByte & (0x80U >> bit))
+        {
+          frameBuffer[destByteIndex] |= destMask;
+        }
+        else
+        {
+          frameBuffer[destByteIndex] &= static_cast<uint8_t>(~destMask);
+        }
       }
     }
   }
@@ -685,26 +693,31 @@ void EInkDisplay::drawImageTransparent(const uint8_t *imageData, const uint16_t 
     return;
   }
 
-  // Calculate bytes per line for the image
-  const uint16_t imageWidthBytes = w / 8;
-
-  // Copy only black pixels to frame buffer
+  const uint16_t imageWidthBytes = packedRowBytes(w);
   for (uint16_t row = 0; row < h; row++)
   {
     const uint16_t destY = y + row;
     if (destY >= displayHeight)
       break;
 
-    const uint16_t destOffset = destY * displayWidthBytes + (x / 8);
-    const uint16_t srcOffset = row * imageWidthBytes;
-
-    for (uint16_t col = 0; col < imageWidthBytes; col++)
+    const uint32_t destRowOffset = static_cast<uint32_t>(destY) * displayWidthBytes;
+    const uint32_t srcRowOffset = static_cast<uint32_t>(row) * imageWidthBytes;
+    for (uint16_t byteIndex = 0; byteIndex < imageWidthBytes; byteIndex++)
     {
-      if ((x / 8 + col) >= displayWidthBytes)
-        break;
+      const uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcRowOffset + byteIndex]) : imageData[srcRowOffset + byteIndex];
+      const uint16_t srcBaseX = byteIndex * 8U;
+      for (uint16_t bit = 0; bit < 8U && (srcBaseX + bit) < w; bit++)
+      {
+        if (srcByte & (0x80U >> bit))
+          continue;
 
-      uint8_t srcByte = fromProgmem ? pgm_read_byte(&imageData[srcOffset + col]) : imageData[srcOffset + col];
-      frameBuffer[destOffset + col] &= srcByte;
+        const uint16_t destX = x + srcBaseX + bit;
+        if (destX >= displayWidth)
+          break;
+
+        const uint32_t destByteIndex = destRowOffset + (destX >> 3U);
+        frameBuffer[destByteIndex] &= static_cast<uint8_t>(~(0x80U >> (destX & 7U)));
+      }
     }
   }
 
